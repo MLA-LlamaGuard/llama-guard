@@ -10,10 +10,13 @@
 ### TODOLIST
 - Input / Output 확인
   > Input : Code (함수 단위) / Output : Vuln_Description 
-  > Vuln_Description : 취약점 설명 처럼 나오면 좋음
+  > Vuln_Description : 취약점 설명 처럼 나오면 좋음.
+
 - 데이터를 어떻게 학습시켜야하는지 
     (적합한 오픈 데이터 확인)
 - 학습 및 추론 방법
+
+
 
 
 
