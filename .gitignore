@@ -1,2 +1,8 @@
 # llama-model/
 llama-model/llama-3.2-1B-Instruct/
+llama-model/llama-3.2-1B-Instruct-vuln-lora/
+llama-model/merged-vuln-detector/
+
+*.env
+data/
+*_og*
