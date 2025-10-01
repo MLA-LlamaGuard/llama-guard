@@ -12,6 +12,7 @@ from transformers import (
     set_seed,
 )
 from peft import LoraConfig, prepare_model_for_kbit_training, PeftModel
+from sklearn.model_selection import train_test_split
 from trl import SFTTrainer, SFTConfig
 import random
 import numpy as np
@@ -24,6 +25,7 @@ torch.manual_seed(SEED)
 torch.cuda.manual_seed_all(SEED)
 set_seed(SEED)
 
+eval_ds = None
 # =========================
 # 콜백: 런타임 로그
 # =========================
@@ -112,16 +114,63 @@ os.makedirs(output_dir, exist_ok=True)
 # =========================
 # 데이터셋 로드 및 SFT용 전처리 (secure_programming_dpo_test.json)
 # =========================
-print("1) 데이터셋 로드: secure_programming_dpo_test.json ...")
+print("1) 데이터셋 로드: secure_programming_dpo.json ...")
 dataset = load_dataset('json', data_files="./data/Code_Vuln_DPO/secure_programming_dpo.json")
+dataset = load_dataset('json', data_files="./data/Code_Vuln_DPO/secure_programming_dpo_flat.json")
+
+
+# 2. Train/Test 분할 (80:20)
+# split_dataset = dataset['train'].train_test_split(test_size=0.1, seed=42)
+# 3. Test를 Validation/Test로 재분할 (각 10%)
+# test_valid = split_dataset['test'].train_test_split(test_size=0.5, seed=42)
+
+# 4. 최종 데이터셋 구성
+# train_dataset = split_dataset['train']  # 80%
+# valid_dataset = test_valid['train']     # 10%/
+# test_dataset = test_valid['test']       # 10%
+
+
+# print(f"Train: {len(train_dataset)} samples")
+# print(f"Validation: {len(valid_dataset)} samples")  
+# print(f"Test: {len(test_dataset)} samples")
+
+
+# def formatting_func(examples):
+#     texts = []
+#    for q, vuln, chosen in zip(examples["question"], examples["vulnerability"], examples["chosen"]):
+#        prompt = f"보안 전문가의 입장에서, 다음 문제를 보고 취약점이 있다면 설명과 함께 안전한 코드를 작성하라.\n문제: {q}\n취약점 유형: {vuln}"
+#        response = chosen.strip()
+#        texts.append(prompt + '\n' + response)
+#    return {"text": texts}
+
+
+# def formatting_func(examples):
+#     texts = []
+#     for vuln, rejected, chosen in zip(examples["vulnerability"], examples["rejected"], examples["chosen"]):
+#         # Sample 1: Vulnerable code → Vulnerability description
+#         prompt1 = f"Analyze the security vulnerabilities in the following code.\n\n{rejected.strip()}"
+#         response1 = vuln.strip()
+#         texts.append(prompt1 + '\n\nAnalysis:\n' + response1)
+        
+#         # Sample 2: Safe code → Safety confirmation
+#         prompt2 = f"Analyze the security vulnerabilities in the following code.\n\n{chosen.strip()}"
+#         response2 = "No vulnerabilities detected. This code follows security best practices."
+#         texts.append(prompt2 + '\n\nAnalysis:\n' + response2)
+    
+#     return {"text": texts}
 
 def formatting_func(examples):
     texts = []
-    for q, vuln, chosen in zip(examples["question"], examples["vulnerability"], examples["chosen"]):
-        prompt = f"보안 전문가의 입장에서, 다음 문제를 보고 취약점이 있다면 설명과 함께 안전한 코드를 작성하라.\n문제: {q}\n취약점 유형: {vuln}"
-        response = chosen.strip()
-        texts.append(prompt + '\n' + response)
+    for prompt, response in zip(examples['code'], examples['desc']):
+        texts.append(f"Analyze the security vulnerabilities in the following code.\n\n{prompt}\n\nAnalysis:\n{response}")
     return {"text": texts}
+
+
+# def formatting_func(example):
+#     prompt = f"Analyze the security vulnerabilities in the following code.\n\n{example['code']}"
+#     response = example['desc']
+#     return {"text": prompt + "\n\nAnalysis:\n" + response}
+
 
 train_dataset = dataset["train"].map(formatting_func, batched=True)
 print(f"총 샘플 수: {len(train_dataset)}")
@@ -219,6 +268,7 @@ time_cb = TimeBudgetCallback(max_minutes=30)
 trainer = SFTTrainer(
     model=model,
     train_dataset=train_dataset,
+    eval_dataset=eval_ds,      # ← None으로 지정
     peft_config=peft_config,
     args=training_arguments,
     callbacks=[metrics_cb, time_cb],
@@ -234,6 +284,7 @@ tokenizer.save_pretrained(output_dir)
 base = AutoModelForCausalLM.from_pretrained(
     model_name, torch_dtype=torch.bfloat16, device_map="cpu", trust_remote_code=True
 )
+
 model_with_lora = PeftModel.from_pretrained(base, lora_adapter_dir)
 merged = model_with_lora.merge_and_unload()
 merged.save_pretrained("./merged-vuln-detector", safe_serialization=True)
