@@ -88,20 +88,11 @@ class Config:
     # Normalized score threshold (0-1) for patch generation
     PATCH_SCORE_THRESHOLD = 0.7
 
-    # Confidence levels
-    HIGH_CONFIDENCE_THRESHOLD = 8  # CVSS score for high confidence
-    HIGH_CONFIDENCE_SCORE = 0.85
-    LOW_CONFIDENCE_SCORE = 0.75
-
     # ============================================================================
     # REPORT GENERATION
     # ============================================================================
 
-    # Estimated effort hours by vulnerability type
-    EFFORT_HOURS_SQL = 8
-    EFFORT_HOURS_DEFAULT = 10
-
-    # Number of related CVEs to show in report
+    # Number of related CVEs to include in LLM report context
     REPORT_MAX_RELATED_CVES = 3
 
     # ============================================================================

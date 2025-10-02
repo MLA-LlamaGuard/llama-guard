@@ -20,7 +20,7 @@ from config import config
 
 # Import services
 from services.llama_service import load_model, analyze_code, load_cve_db, search_cves
-from services.patch_service import process_input
+from services.patch_service import process_input, generate_security_report
 
 # Import CVE classes (needed for pickle deserialization)
 from CVE.cve_vectordb import CVEEntry
@@ -334,12 +334,12 @@ def vulnerability_fix_node(state: AgentState) -> Dict[str, Any]:
 
 def report_generation_node(state: AgentState) -> Dict[str, Any]:
     """
-    Generate final analysis report in detailed format.
+    Generate final analysis report.
 
     Report content:
     - No vulnerability: simple safe message
     - CVSS < 7: basic analysis
-    - CVSS >= 7: detailed professional security report
+    - CVSS >= 7: LLM-generated detailed professional security report
 
     Updates:
         - report: Final formatted report string
@@ -349,7 +349,6 @@ def report_generation_node(state: AgentState) -> Dict[str, Any]:
     is_detected = state.get("is_detected", False)
     initial_analysis = state.get("initial_analysis", "")
     final_severity = state.get("final_severity", "0")
-    fixed_code = state.get("fixed_code", "")
     matched_vulnerabilities = state.get("matched_vulnerabilities", [])
     retrieved_vulnerabilities = state.get("retrieved_vulnerabilities", [])
     input_code = state.get("input_code", "")
@@ -377,111 +376,114 @@ def report_generation_node(state: AgentState) -> Dict[str, Any]:
                 report += f"- {vuln}\n"
             report += "\n"
         report += f"### Initial Analysis:\n{initial_analysis}\n\n"
+        report += "**Recommendation:** Monitor this code and consider remediation during next security review.\n\n"
         print(f"Report: LOW/MEDIUM (severity={severity_int})")
         print(f"Report length: {len(report)} chars")
         return {"report": report}
 
-    # High severity: detailed professional report
+    # High severity: LLM-generated detailed professional report
     from datetime import datetime
 
     # Extract primary vulnerability type
     primary_vuln = matched_vulnerabilities[0] if matched_vulnerabilities else "UNKNOWN_VULNERABILITY"
-    vuln_id = primary_vuln.replace(" ", "_").replace("'", "").replace("(", "").replace(")", "").upper()
-    if len(vuln_id) > 50:
-        vuln_id = "SQL_INJECTION" if "SQL" in vuln_id else "SECURITY_VULNERABILITY"
 
-    # Build detailed report
-    report = f"## {vuln_id}\n"
-    report += f"**Description:** {initial_analysis}\n\n"
+    # Detect language
+    language = "python"  # Default
+    for lang, patterns in config.LANG_PATTERNS.items():
+        if any(pattern in input_code for pattern in patterns):
+            language = lang
+            break
 
-    # Executive Summary
-    report += "### Executive summary\n"
-    cvss_level = "critical" if severity_int >= 9 else "high"
-    report += f"This is a {cvss_level} severity vulnerability (CVSS: {final_severity}) that allows attackers to "
-    if "SQL" in vuln_id or "INJECTION" in primary_vuln.upper():
-        report += "manipulate database queries and potentially gain unauthorized access to sensitive data.\n\n"
-    elif "XSS" in vuln_id or "CROSS-SITE" in primary_vuln.upper():
-        report += "inject malicious scripts into web pages viewed by other users.\n\n"
-    else:
-        report += "exploit the application and compromise security.\n\n"
+    print(f"Calling LLM to generate detailed security report...")
+    print(f"  Vulnerability: {primary_vuln}")
+    print(f"  CVSS: {final_severity}")
+    print(f"  Language: {language}")
 
-    # Potential Impact
-    report += "### Potential impact\n"
-    if "SQL" in vuln_id:
-        report += "- Attackers can read, modify, or delete database records\n"
-        report += "- Potential for privilege escalation and server compromise\n"
-        report += "- Data exfiltration of sensitive information\n"
-    elif "XSS" in vuln_id:
-        report += "- Session hijacking and credential theft\n"
-        report += "- Defacement and phishing attacks\n"
-        report += "- Malicious script execution in user browsers\n"
-    else:
-        report += "- Unauthorized access to sensitive resources\n"
-        report += "- Data integrity and confidentiality breach\n"
-        report += "- Potential for further system exploitation\n"
+    try:
+        # Call SOLAR PRO 2 to generate complete report
+        llm_report = generate_security_report(
+            vuln=primary_vuln,
+            code=input_code,
+            language=language,
+            cvss_score=float(final_severity),
+            llama_analysis=initial_analysis
+        )
 
-    difficulty = "Medium" if severity_int < 9 else "Low"
-    report += f"- Attack difficulty: {difficulty}\n"
-    report += f"- Required privileges: None (unauthenticated attack possible)\n\n"
+        # Build formatted report from LLM response
+        vuln_id = llm_report.get('vuln', primary_vuln).replace(" ", "_").upper()
 
-    # Recommended Quick Mitigation
-    report += "### Recommended quick mitigation\n"
-    if "SQL" in vuln_id:
-        report += "1. **Immediate:** Use parameterized queries/prepared statements for all database operations\n"
-        report += "2. **Short-term (1-2 weeks):** Implement input validation and sanitization\n"
-        report += "3. **Long-term:** Deploy Web Application Firewall (WAF) and conduct security audit\n\n"
-    elif "XSS" in vuln_id:
-        report += "1. **Immediate:** Implement output encoding for all user-supplied data\n"
-        report += "2. **Short-term (1-2 weeks):** Deploy Content Security Policy (CSP) headers\n"
-        report += "3. **Long-term:** Use auto-escaping template engines and conduct code review\n\n"
-    else:
-        report += "1. **Immediate:** Apply input validation and sanitization\n"
-        report += "2. **Short-term (1-2 weeks):** Implement security controls and access restrictions\n"
-        report += "3. **Long-term:** Conduct comprehensive security assessment\n\n"
+        report = f"## {vuln_id}\n"
+        report += f"**CVSS Score:** {llm_report.get('cvss_score', final_severity)}\n\n"
+        report += f"**Description:** {initial_analysis}\n\n"
 
-    # Implementation Steps
-    report += "### Implementation steps\n"
-    if "SQL" in vuln_id:
-        report += "- Replace all dynamic SQL queries with prepared statements\n"
-        report += "- Use ORM frameworks or database-specific parameterized query APIs\n"
-        report += "- Implement strict input validation (type, length, format)\n"
-        report += "- Apply principle of least privilege for database accounts\n\n"
-    elif "XSS" in vuln_id:
-        report += "- Encode all output using context-appropriate functions\n"
-        report += "- Implement Content Security Policy (CSP) headers\n"
-        report += "- Use HTTPOnly and Secure flags for cookies\n"
-        report += "- Validate and sanitize all user inputs\n\n"
-    else:
-        report += "- Review and patch vulnerable code sections\n"
-        report += "- Implement proper input validation and sanitization\n"
-        report += "- Apply security best practices for the identified vulnerability\n"
-        report += "- Conduct thorough testing after remediation\n\n"
+        # Executive Summary
+        report += "### Executive summary\n"
+        report += llm_report.get('executive_summary', 'No summary available') + "\n\n"
 
-    # Suggested Patch
-    report += "### Suggested patch\n"
-    if fixed_code and len(fixed_code) > 10:
-        # Detect language from code
-        lang = "python"
-        if "<?php" in input_code or "<?php" in fixed_code:
-            lang = "php"
-        elif "function" in fixed_code and ("{" in fixed_code or "const" in fixed_code):
-            lang = "javascript"
+        # Potential Impact
+        report += "### Potential impact\n"
+        impacts = llm_report.get('potential_impact', [])
+        if isinstance(impacts, list):
+            for impact in impacts:
+                report += f"- {impact}\n"
+        else:
+            report += f"{impacts}\n"
 
-        report += f"```{lang}\n{fixed_code}\n```\n\n"
-    else:
-        report += "*Automated patch generation failed. Manual code review and remediation required.*\n\n"
+        attack_diff = llm_report.get('attack_difficulty', 'Unknown')
+        req_priv = llm_report.get('required_privileges', 'Unknown')
+        report += f"- Attack difficulty: {attack_diff}\n"
+        report += f"- Required privileges: {req_priv}\n\n"
 
-    # Metadata footer
-    confidence = (config.HIGH_CONFIDENCE_SCORE if severity_int >= config.HIGH_CONFIDENCE_THRESHOLD
-                  else config.LOW_CONFIDENCE_SCORE)
-    effort_hours = config.EFFORT_HOURS_SQL if "SQL" in vuln_id else config.EFFORT_HOURS_DEFAULT
+        # Recommended Mitigation
+        report += "### Recommended quick mitigation\n"
+        mitigation = llm_report.get('recommended_mitigation', {})
+        if isinstance(mitigation, dict):
+            report += f"1. **Immediate:** {mitigation.get('immediate', 'N/A')}\n"
+            report += f"2. **Short-term (1-2 weeks):** {mitigation.get('short_term', 'N/A')}\n"
+            report += f"3. **Long-term:** {mitigation.get('long_term', 'N/A')}\n\n"
+        else:
+            report += f"{mitigation}\n\n"
 
-    report += f"**Estimated effort:** {effort_hours} hours  -  **Confidence:** {confidence:.2f}\n\n"
-    report += f"*Generated: {datetime.utcnow().isoformat()}+00:00 UTC*\n"
+        # Implementation Steps
+        report += "### Implementation steps\n"
+        impl_steps = llm_report.get('implementation_steps', [])
+        if isinstance(impl_steps, list):
+            for step in impl_steps:
+                report += f"- {step}\n"
+        else:
+            report += f"{impl_steps}\n"
+        report += "\n"
 
-    print(f"Report: HIGH RISK (severity={severity_int})")
-    print(f"Report length: {len(report)} chars")
-    return {"report": report}
+        # Suggested Patch
+        report += "### Suggested patch\n"
+        patched_code_data = llm_report.get('patched_code', {})
+        if isinstance(patched_code_data, dict):
+            code_snippet = patched_code_data.get('code_snippet', '')
+            code_lang = patched_code_data.get('language', language)
+            if code_snippet and len(code_snippet) > 10:
+                report += f"```{code_lang}\n{code_snippet}\n```\n\n"
+            else:
+                report += "*Automated patch generation failed. Manual code review and remediation required.*\n\n"
+        else:
+            report += "*Automated patch generation failed. Manual code review and remediation required.*\n\n"
+
+        # Metadata footer
+        effort_hours = llm_report.get('estimated_effort_hours', 10)
+        confidence = llm_report.get('confidence', 0.80)
+
+        report += f"**Estimated effort:** {effort_hours} hours  -  **Confidence:** {confidence:.2f}\n\n"
+        report += f"*Generated: {datetime.utcnow().isoformat()}+00:00 UTC*\n"
+
+        print(f"Report: HIGH RISK (severity={severity_int})")
+        print(f"  Effort: {effort_hours} hours")
+        print(f"  Confidence: {confidence:.2f}")
+        print(f"Report length: {len(report)} chars")
+
+        return {"report": report}
+
+    except Exception as e:
+        print(f"ERROR: LLM report generation failed: {e}")
+        raise RuntimeError(f"Failed to generate security report using LLM: {e}")
 
 
 # ============================================================================
