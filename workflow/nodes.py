@@ -7,7 +7,6 @@ LangGraph workflow nodes for LlamaGuard vulnerability analysis system.
 
 import os
 import sys
-import json
 import re
 from typing import Dict, Any, Literal
 
@@ -16,18 +15,18 @@ parent_dir = os.path.join(os.path.dirname(__file__), '..')
 sys.path.append(parent_dir)
 sys.path.append(os.path.join(parent_dir, 'llama-model'))
 
-# Import from analyze.py
-from analyze import load_model, analyze_code, load_cve_db, search_cves, calculate_cvss_score
+# Import configuration
+from config import config
+
+# Import services
+from services.llama_service import load_model, analyze_code, load_cve_db, search_cves
+from services.patch_service import process_input
 
 # Import CVE classes (needed for pickle deserialization)
 from CVE.cve_vectordb import CVEEntry
 
-# Import from vuln_processor.py
-from vuln_processor import sanitize_code, process_input
-
 # Import state definitions
-from state import AgentState, ResponseData, model
-from langchain_core.messages import SystemMessage, HumanMessage
+from state import AgentState
 
 # Import LLaMA utilities
 from llama_predict import resolve_dtype
@@ -41,22 +40,41 @@ _cve_db = None
 
 
 def _get_llama_model():
-    """Lazy load LLaMA model (singleton pattern)"""
+    """
+    Lazy load LLaMA model (singleton pattern).
+
+    Returns:
+        Tuple of (tokenizer, model)
+
+    Raises:
+        RuntimeError: If model loading fails
+    """
     global _llama_tokenizer, _llama_model
     if _llama_tokenizer is None or _llama_model is None:
-        model_path = os.path.join(parent_dir, "llama-model", "merged-vuln-detector")
-        dtype = resolve_dtype("fp16")
-        _llama_tokenizer, _llama_model = load_model(model_path, dtype)
+        try:
+            dtype = resolve_dtype(config.MODEL_DTYPE)
+            _llama_tokenizer, _llama_model = load_model(config.MODEL_PATH, dtype)
+        except Exception as e:
+            raise RuntimeError(f"Failed to initialize LLaMA model: {e}")
     return _llama_tokenizer, _llama_model
 
 
 def _get_cve_db():
-    """Lazy load CVE database (singleton pattern)"""
+    """
+    Lazy load CVE database (singleton pattern).
+
+    Returns:
+        CVEVectorDB instance or None if database files not found
+
+    Raises:
+        RuntimeError: If database loading fails
+    """
     global _cve_db
     if _cve_db is None:
-        index_path = os.path.join(parent_dir, "CVE", "cve_index.faiss")
-        data_path = os.path.join(parent_dir, "CVE", "cve_data.pkl")
-        _cve_db = load_cve_db(index_path, data_path)
+        try:
+            _cve_db = load_cve_db(config.CVE_INDEX_PATH, config.CVE_DATA_PATH)
+        except Exception as e:
+            raise RuntimeError(f"Failed to initialize CVE database: {e}")
     return _cve_db
 
 
@@ -88,22 +106,14 @@ def initial_analysis_node(state: AgentState) -> Dict[str, Any]:
 
     # Analyze code
     print(f"Analyzing code ({len(input_code)} chars)...")
-    analysis_result = analyze_code(input_code, tokenizer, llama_model, max_new_tokens=512)
+    analysis_result = analyze_code(input_code, tokenizer, llama_model, max_new_tokens=config.MAX_NEW_TOKENS)
 
-    # Determine if vulnerability detected
-    # Simple heuristic: check for common vulnerability keywords
+    # Determine if vulnerability detected using configured keywords
     analysis_lower = analysis_result.lower()
-    vuln_keywords = [
-        'vulnerability', 'vulnerable', 'injection', 'xss', 'csrf',
-        'insecure', 'unsafe', 'exploit', 'cwe-', 'cve-',
-        'sql injection', 'command injection', 'path traversal'
-    ]
-
-    is_vulnerable = any(keyword in analysis_lower for keyword in vuln_keywords)
+    is_vulnerable = any(keyword in analysis_lower for keyword in config.VULN_KEYWORDS)
 
     # Also check for explicit "no vulnerabilities" or "safe" indicators
-    safe_keywords = ['no vulnerabilities', 'safe', 'secure', 'no issues detected']
-    if any(keyword in analysis_lower for keyword in safe_keywords):
+    if any(keyword in analysis_lower for keyword in config.SAFE_KEYWORDS):
         is_vulnerable = False
 
     print(f"Analysis complete. Vulnerabilities detected: {is_vulnerable}")
@@ -144,7 +154,7 @@ def rag_node(state: AgentState) -> Dict[str, Any]:
 
     # Search for similar CVEs
     print(f"Searching CVE database with query: {initial_analysis[:100]}...")
-    cve_results = search_cves(initial_analysis, cve_db, top_k=5)
+    cve_results = search_cves(initial_analysis, cve_db, top_k=config.CVE_TOP_K)
 
     # Format retrieved vulnerabilities
     retrieved_vulns = []
@@ -168,7 +178,7 @@ def rag_node(state: AgentState) -> Dict[str, Any]:
             "cvss": cve_entry.metadata.get("cvss", ""),
             "cwe": final_cwe,
             "similarity": similarity,
-            "text": cve_entry.text[:200] + "..."  # Truncate for state
+            "text": cve_entry.text[:config.CVE_TEXT_TRUNCATE_LENGTH] + "..."  # Truncate for state
         }
         retrieved_vulns.append(vuln_dict)
 
@@ -184,17 +194,7 @@ def rag_node(state: AgentState) -> Dict[str, Any]:
 
     # Fallback: extract common vulnerability types from initial_analysis if CWE extraction failed
     if not matched_vuln_names and initial_analysis:
-        vuln_patterns = [
-            (r'SQL\s+[Ii]njection', 'SQL Injection'),
-            (r'XSS|Cross[- ]Site\s+Scripting', 'Cross-Site Scripting'),
-            (r'CSRF|Cross[- ]Site\s+Request\s+Forgery', 'Cross-Site Request Forgery'),
-            (r'Command\s+Injection', 'Command Injection'),
-            (r'Path\s+Traversal', 'Path Traversal'),
-            (r'Buffer\s+Overflow', 'Buffer Overflow'),
-            (r'Code\s+Injection', 'Code Injection'),
-            (r'Deserialization', 'Insecure Deserialization'),
-        ]
-        for pattern, vuln_name in vuln_patterns:
+        for pattern, vuln_name in config.VULN_PATTERNS:
             if re.search(pattern, initial_analysis, re.IGNORECASE):
                 matched_vuln_names.add(vuln_name)
 
@@ -284,15 +284,12 @@ def vulnerability_fix_node(state: AgentState) -> Dict[str, Any]:
     except:
         normalized_score = 0.0
 
-    # Detect language (simple heuristic)
+    # Detect language using configured patterns
     language = "python"  # Default
-    if "<?php" in input_code or "<?=" in input_code:
-        language = "php"
-    elif "function" in input_code and "{" in input_code and "}" in input_code:
-        if "const" in input_code or "let" in input_code or "var" in input_code:
-            language = "javascript"
-    elif "public class" in input_code or "private void" in input_code:
-        language = "java"
+    for lang, patterns in config.LANG_PATTERNS.items():
+        if any(pattern in input_code for pattern in patterns):
+            language = lang
+            break
 
     print(f"Processing vulnerability: {vuln_name}")
     print(f"CVSS: {final_severity} -> normalized score: {normalized_score:.2f}")
@@ -304,8 +301,7 @@ def vulnerability_fix_node(state: AgentState) -> Dict[str, Any]:
             original_code=input_code,
             vuln=vuln_name,
             score=normalized_score,
-            language=language,
-            use_mock=False  # Use real API
+            language=language
         )
 
         print(f"vuln_processor result: {result.get('decision', 'patched')}")
@@ -476,10 +472,11 @@ def report_generation_node(state: AgentState) -> Dict[str, Any]:
         report += "*Automated patch generation failed. Manual code review and remediation required.*\n\n"
 
     # Metadata footer
-    confidence = 0.85 if severity_int >= 8 else 0.75
-    effort_hours = 8 if "SQL" in vuln_id else 10
+    confidence = (config.HIGH_CONFIDENCE_SCORE if severity_int >= config.HIGH_CONFIDENCE_THRESHOLD
+                  else config.LOW_CONFIDENCE_SCORE)
+    effort_hours = config.EFFORT_HOURS_SQL if "SQL" in vuln_id else config.EFFORT_HOURS_DEFAULT
 
-    report += f"**Estimated effort:** {effort_hours} hours  •  **Confidence:** {confidence:.2f}\n\n"
+    report += f"**Estimated effort:** {effort_hours} hours  -  **Confidence:** {confidence:.2f}\n\n"
     report += f"*Generated: {datetime.utcnow().isoformat()}+00:00 UTC*\n"
 
     print(f"Report: HIGH RISK (severity={severity_int})")
@@ -539,8 +536,8 @@ def detection_branch(state: AgentState) -> Literal["rag_node", "report_generatio
 def severity_branch(state: AgentState) -> Literal["vulnerability_fix_node", "report_generation_node"]:
     """
     Branch based on CVSS severity score.
-    - If severity >= 7 (High): route to vulnerability_fix_node
-    - If severity < 7 (Low/Medium): route to report_generation_node
+    - If severity >= SEVERITY_THRESHOLD (High): route to vulnerability_fix_node
+    - If severity < SEVERITY_THRESHOLD (Low/Medium): route to report_generation_node
     """
     print("\n--- SEVERITY BRANCH ---")
 
@@ -554,7 +551,7 @@ def severity_branch(state: AgentState) -> Literal["vulnerability_fix_node", "rep
         severity_score = int(severity_str)
         print(f"Severity score: {severity_score}")
 
-        if 7 <= severity_score <= 10:
+        if config.SEVERITY_THRESHOLD <= severity_score <= 10:
             print("High severity detected -> routing to [vulnerability_fix_node]")
             return "vulnerability_fix_node"
         else:
