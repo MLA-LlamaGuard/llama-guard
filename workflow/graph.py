@@ -5,6 +5,8 @@ graph.py
 LangGraph workflow construction and execution for LlamaGuard vulnerability analysis.
 """
 
+import sys
+import os
 import argparse
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import InMemorySaver
@@ -12,11 +14,17 @@ from langgraph.checkpoint.memory import InMemorySaver
 from state import AgentState
 
 # Import CVE classes for pickle deserialization compatibility
-import sys
-import os
 parent_dir = os.path.join(os.path.dirname(__file__), '..')
 sys.path.append(parent_dir)
 from CVE.cve_vectordb import CVEEntry
+
+# Fix Unicode encoding for Windows console
+if sys.platform == 'win32':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except AttributeError:
+        import codecs
+        sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
 
 # Make CVEEntry available in __main__ namespace for pickle compatibility
 # (needed when pickle file was created from a script run as __main__)
