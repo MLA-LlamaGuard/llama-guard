@@ -13,7 +13,7 @@ from .llama_service import (
     search_cves,
 )
 from .patch_service import (
-    process_input,
+    call_external_for_patch,
     generate_security_report,
 )
 
@@ -24,6 +24,6 @@ __all__ = [
     'load_cve_db',
     'search_cves',
     # Patch Service
-    'process_input',
+    'call_external_for_patch',
     'generate_security_report',
 ]

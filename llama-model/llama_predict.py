@@ -40,7 +40,7 @@ def main():
         tokenizer.pad_token = tokenizer.eos_token
     model = AutoModelForCausalLM.from_pretrained(
         args.model,
-        dtype=dtype,
+        torch_dtype=dtype,
         device_map="auto"
     )
     model.eval()

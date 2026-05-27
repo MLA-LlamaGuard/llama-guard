@@ -14,24 +14,26 @@ import sys
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-# Add parent directories to path
-workflow_dir = os.path.join(os.path.dirname(__file__), '..')
-project_dir = os.path.join(workflow_dir, '..')
-sys.path.append(workflow_dir)
-sys.path.append(project_dir)
-sys.path.append(os.path.join(project_dir, 'llama-model'))
+# Bootstrap sys.path (services/ is one level below workflow/, so resolve manually)
+_svc_dir = os.path.dirname(os.path.abspath(__file__))
+_workflow_dir = os.path.dirname(_svc_dir)
+_project_dir = os.path.dirname(_workflow_dir)
+for _p in (_workflow_dir, _project_dir, os.path.join(_project_dir, 'llama-model')):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from llama_predict import resolve_dtype, build_prompt
 from CVE.cve_vectordb import CVEVectorDB
 
 
-def load_model(model_path: str, dtype):
+def load_model(model_path: str, dtype, hf_token: str = None):
     """
     Load fine-tuned LLaMA model for vulnerability analysis.
 
     Args:
-        model_path: Path to the model directory
+        model_path: HuggingFace Hub ID (e.g. 'cycloevan/vuln_detector') or local directory
         dtype: Data type for model (torch dtype object)
+        hf_token: HuggingFace token for private models (optional)
 
     Returns:
         Tuple of (tokenizer, model)
@@ -42,11 +44,13 @@ def load_model(model_path: str, dtype):
     print(f"\n[1/3] Loading LLaMA model from {model_path}...")
 
     try:
-        tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True)
+        tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True, token=hf_token)
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
 
-        model = AutoModelForCausalLM.from_pretrained(model_path, dtype=dtype, device_map="auto")
+        model = AutoModelForCausalLM.from_pretrained(
+            model_path, torch_dtype=dtype, device_map="auto", token=hf_token
+        )
         model.eval()
         print(f"Model loaded (GPU: {torch.cuda.is_available()})")
         return tokenizer, model

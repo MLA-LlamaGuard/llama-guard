@@ -1,14 +1,38 @@
 [project]
 name = "llama-guard"
 version = "0.1.0"
-description = "CVE database downloader and vectorized database for RAG"
+description = "Code vulnerability analysis system using fine-tuned LLaMA and CVE RAG"
 requires-python = ">=3.9"
 dependencies = [
-    "requests>=2.31.0",
-    "numpy>=1.24.0",
-    "faiss-cpu>=1.7.4",
-    "sentence-transformers>=2.2.0",
+    # Core ML/DL
     "torch>=2.7.0",
     "transformers>=4.39.0",
     "accelerate>=0.20.0",
+    # Vector database and embeddings
+    "faiss-cpu>=1.7.4",
+    "sentence-transformers>=2.2.0",
+    "numpy>=1.24.0",
+    # LangGraph workflow
+    "langgraph>=0.2.0",
+    "langgraph-checkpoint-sqlite>=1.0.0",
+    "pydantic>=2.0.0",
+    # External API
+    "openai>=1.52.2",
+    "python-dotenv>=1.0.0",
+    # Utilities
+    "requests>=2.31.0",
 ]
+
+[project.optional-dependencies]
+# Training dependencies (QLoRA fine-tuning): uv sync --extra train
+train = [
+    "datasets>=2.18.0",
+    "peft>=0.10.0",
+    "trl>=0.8.0",
+    "bitsandbytes>=0.43.0",
+    "psutil>=5.9.8",
+    "tqdm>=4.66.0",
+]
+
+[tool.uv]
+# Use --extra train for fine-tuning workflow

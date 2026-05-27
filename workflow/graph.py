@@ -5,17 +5,19 @@ graph.py
 LangGraph workflow construction and execution for LlamaGuard vulnerability analysis.
 """
 
-import sys
 import os
+import sys
 import argparse
+import path_setup  # noqa: F401 — adds project root and llama-model/ to sys.path
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.memory import InMemorySaver
+try:
+    from langgraph.checkpoint.sqlite import SqliteSaver
+    _USE_SQLITE = True
+except ImportError:
+    from langgraph.checkpoint.memory import InMemorySaver
+    _USE_SQLITE = False
 
 from state import AgentState
-
-# Import CVE classes for pickle deserialization compatibility
-parent_dir = os.path.join(os.path.dirname(__file__), '..')
-sys.path.append(parent_dir)
 from CVE.cve_vectordb import CVEEntry
 
 # Fix Unicode encoding for Windows console
@@ -33,11 +35,13 @@ from nodes import (
     initial_analysis_node,
     rag_node,
     cvss_calculation_node,
-    vulnerability_fix_node,
     report_generation_node,
     detection_branch,
-    severity_branch,
 )
+
+# SQLite checkpoint DB path: always in project root, regardless of CWD
+_PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_DB_PATH = os.path.join(_PROJECT_DIR, "llamaguard_state.db")
 
 
 def build_graph():
@@ -56,28 +60,17 @@ def build_graph():
                       ↓
                     cvss_calculation_node
                       ↓
-                    severity_branch
-                      ↓ (final_severity >= 7?)
-                      ├─ False → report_generation_node → END
-                      └─ True → vulnerability_fix_node
-                                  ↓
-                                report_generation_node → END
+                    report_generation_node → END
     """
-    # Create StateGraph
     workflow = StateGraph(AgentState)
 
-    # Add nodes
     workflow.add_node("initial_analysis_node", initial_analysis_node)
     workflow.add_node("rag_node", rag_node)
     workflow.add_node("cvss_calculation_node", cvss_calculation_node)
-    workflow.add_node("vulnerability_fix_node", vulnerability_fix_node)
     workflow.add_node("report_generation_node", report_generation_node)
 
-    # Set entry point
     workflow.set_entry_point("initial_analysis_node")
 
-    # Add edges
-    # initial_analysis_node -> detection_branch
     workflow.add_conditional_edges(
         "initial_analysis_node",
         detection_branch,
@@ -87,27 +80,14 @@ def build_graph():
         }
     )
 
-    # rag_node -> cvss_calculation_node
     workflow.add_edge("rag_node", "cvss_calculation_node")
-
-    # cvss_calculation_node -> severity_branch
-    workflow.add_conditional_edges(
-        "cvss_calculation_node",
-        severity_branch,
-        {
-            "vulnerability_fix_node": "vulnerability_fix_node",
-            "report_generation_node": "report_generation_node",
-        }
-    )
-
-    # vulnerability_fix_node -> report_generation_node
-    workflow.add_edge("vulnerability_fix_node", "report_generation_node")
-
-    # report_generation_node -> END
+    workflow.add_edge("cvss_calculation_node", "report_generation_node")
     workflow.add_edge("report_generation_node", END)
 
-    # Compile graph
-    memory = InMemorySaver()
+    if _USE_SQLITE:
+        memory = SqliteSaver.from_conn_string(_DB_PATH)
+    else:
+        memory = InMemorySaver()
     graph = workflow.compile(checkpointer=memory)
 
     return graph
@@ -122,29 +102,28 @@ def run_analysis(input_code: str, thread_id: str = "default"):
         thread_id: Thread ID for checkpointing (default: "default")
 
     Returns:
-        Final state dictionary with analysis results
+        Final state dictionary with all accumulated fields
     """
     print("\n" + "=" * 80)
     print("LlamaGuard Vulnerability Analysis")
     print("=" * 80)
 
-    # Build graph
     graph = build_graph()
+    initial_state = {"input_code": input_code}
+    run_config = {"configurable": {"thread_id": thread_id}}
 
-    # Initial state
-    initial_state = {
-        "input_code": input_code,
-    }
-
-    # Run graph
-    config = {"configurable": {"thread_id": thread_id}}
-    final_state = None
-
-    for state in graph.stream(initial_state, config):
-        # state is a dict: {node_name: node_output}
-        for node_name, node_output in state.items():
+    # stream(mode="updates") yields per-node deltas — used only for progress output.
+    for update in graph.stream(initial_state, run_config):
+        for node_name in update:
             print(f"\n[{node_name}] completed")
-            final_state = node_output
+
+    # Retrieve full accumulated state (all fields from every node).
+    try:
+        snapshot = graph.get_state(run_config)
+        final_state = snapshot.values if snapshot else {}
+    except Exception as e:
+        print(f"WARNING: Could not retrieve final state: {e}")
+        final_state = {}
 
     print("\n" + "=" * 80)
     print("Analysis Complete")

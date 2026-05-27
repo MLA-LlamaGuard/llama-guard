@@ -5,22 +5,17 @@ nodes.py
 LangGraph workflow nodes for LlamaGuard vulnerability analysis system.
 """
 
-import os
-import sys
 import re
 from typing import Dict, Any, Literal
 
-# Add parent directory to path
-parent_dir = os.path.join(os.path.dirname(__file__), '..')
-sys.path.append(parent_dir)
-sys.path.append(os.path.join(parent_dir, 'llama-model'))
+import path_setup  # noqa: F401 — adds project root and llama-model/ to sys.path
 
 # Import configuration
 from config import config
 
 # Import services
 from services.llama_service import load_model, analyze_code, load_cve_db, search_cves
-from services.patch_service import process_input, generate_security_report
+from services.patch_service import generate_security_report
 
 # Import CVE classes (needed for pickle deserialization)
 from CVE.cve_vectordb import CVEEntry
@@ -30,6 +25,26 @@ from state import AgentState
 
 # Import LLaMA utilities
 from llama_predict import resolve_dtype
+
+# ============================================================================
+# Helpers
+# ============================================================================
+
+def _truthy(x: Any) -> bool:
+    """Coerce any LangGraph state value to bool."""
+    if isinstance(x, bool):
+        return x
+    if x is None:
+        return False
+    if isinstance(x, (int, float)):
+        return bool(x)
+    s = str(x).strip().lower()
+    if s in {"true", "1", "yes", "y", "t"}:
+        return True
+    if s in {"false", "0", "no", "n", "f", ""}:
+        return False
+    return False
+
 
 # ============================================================================
 # Global model instances (lazy loading)
@@ -53,7 +68,7 @@ def _get_llama_model():
     if _llama_tokenizer is None or _llama_model is None:
         try:
             dtype = resolve_dtype(config.MODEL_DTYPE)
-            _llama_tokenizer, _llama_model = load_model(config.MODEL_PATH, dtype)
+            _llama_tokenizer, _llama_model = load_model(config.MODEL_PATH, dtype, hf_token=config.HF_TOKEN)
         except Exception as e:
             raise RuntimeError(f"Failed to initialize LLaMA model: {e}")
     return _llama_tokenizer, _llama_model
@@ -85,7 +100,7 @@ def _get_cve_db():
 def initial_analysis_node(state: AgentState) -> Dict[str, Any]:
     """
     Initial vulnerability analysis using fine-tuned LLaMA model.
-    Uses analyze.py::analyze_code() function.
+    Uses llama_service.analyze_code().
 
     Updates:
         - initial_analysis: LLaMA's vulnerability analysis text
@@ -127,7 +142,7 @@ def initial_analysis_node(state: AgentState) -> Dict[str, Any]:
 def rag_node(state: AgentState) -> Dict[str, Any]:
     """
     Retrieve similar CVEs from vector database using RAG.
-    Uses analyze.py::search_cves() function.
+    Uses llama_service.search_cves().
 
     Updates:
         - retrieved_vulnerabilities: List of similar CVE entries
@@ -212,8 +227,6 @@ def rag_node(state: AgentState) -> Dict[str, Any]:
 def cvss_calculation_node(state: AgentState) -> Dict[str, Any]:
     """
     Calculate average CVSS score from retrieved CVEs.
-    Uses analyze.py::calculate_cvss_score() function.
-
     Separated as standalone node to allow future replacement with LLM-based analysis.
 
     Updates:
@@ -245,7 +258,6 @@ def cvss_calculation_node(state: AgentState) -> Dict[str, Any]:
     else:
         avg_cvss = sum(cvss_scores) / len(cvss_scores)
 
-    # Round to integer for severity_branch compatibility
     final_severity = str(int(round(avg_cvss)))
 
     print(f"CVSS scores: {cvss_scores}")
@@ -253,82 +265,6 @@ def cvss_calculation_node(state: AgentState) -> Dict[str, Any]:
 
     return {
         "final_severity": final_severity,
-    }
-
-
-def vulnerability_fix_node(state: AgentState) -> Dict[str, Any]:
-    """
-    Generate fixed code using vuln_processor.py integration.
-
-    Uses process_input() from vuln_processor which handles:
-    - Code sanitization
-    - External LLM API calls
-    - Score-based decision making
-
-    Updates:
-        - fixed_code: Patched source code
-    """
-    print("\n--- VULNERABILITY FIX NODE ---")
-
-    input_code = state.get("input_code", "") or ""
-    matched = state.get("matched_vulnerabilities", []) or []
-    final_severity = state.get("final_severity", "0")
-
-    # Prepare parameters for process_input
-    vuln_name = ", ".join(matched) if matched else "UNKNOWN_VULNERABILITY"
-
-    # Convert CVSS (0-10) to score (0-1)
-    try:
-        cvss_score = float(final_severity)
-        normalized_score = cvss_score / 10.0
-    except:
-        normalized_score = 0.0
-
-    # Detect language using configured patterns
-    language = "python"  # Default
-    for lang, patterns in config.LANG_PATTERNS.items():
-        if any(pattern in input_code for pattern in patterns):
-            language = lang
-            break
-
-    print(f"Processing vulnerability: {vuln_name}")
-    print(f"CVSS: {final_severity} -> normalized score: {normalized_score:.2f}")
-    print(f"Detected language: {language}")
-
-    # Call vuln_processor
-    try:
-        result = process_input(
-            original_code=input_code,
-            vuln=vuln_name,
-            score=normalized_score,
-            language=language
-        )
-
-        print(f"vuln_processor result: {result.get('decision', 'patched')}")
-
-        # Extract fixed code from result
-        if "decision" in result and result["decision"] == "ok":
-            # Low severity - no patch needed
-            fixed_code = ""
-            print(f"Low severity - no patch generated")
-        elif "patched_code" in result:
-            # High severity - patch generated
-            fixed_code = result["patched_code"].get("code_snippet", "")
-            print(f"Patch generated ({len(fixed_code)} chars)")
-        else:
-            fixed_code = ""
-            print(f"WARNING: Unexpected result format from vuln_processor")
-
-    except Exception as e:
-        print(f"ERROR: vuln_processor failed: {e}")
-        fixed_code = ""
-
-    if fixed_code and len(fixed_code) < 50:
-        print(f"WARNING: Fixed code seems too short!")
-        print(f"Fixed code: {fixed_code}")
-
-    return {
-        "fixed_code": fixed_code,
     }
 
 
@@ -366,7 +302,7 @@ def report_generation_node(state: AgentState) -> Dict[str, Any]:
     # Vulnerability detected
     severity_int = int(final_severity) if final_severity.isdigit() else 0
 
-    if severity_int < 7:
+    if severity_int < config.SEVERITY_THRESHOLD:
         # Low/Medium severity: basic report
         report = "# LlamaGuard Vulnerability Analysis Report\n\n"
         report += f"## Status: LOW/MEDIUM RISK (CVSS: {final_severity})\n\n"
@@ -382,7 +318,7 @@ def report_generation_node(state: AgentState) -> Dict[str, Any]:
         return {"report": report}
 
     # High severity: LLM-generated detailed professional report
-    from datetime import datetime
+    from datetime import datetime, timezone
 
     # Extract primary vulnerability type
     primary_vuln = matched_vulnerabilities[0] if matched_vulnerabilities else "UNKNOWN_VULNERABILITY"
@@ -472,7 +408,7 @@ def report_generation_node(state: AgentState) -> Dict[str, Any]:
         confidence = llm_report.get('confidence', 0.80)
 
         report += f"**Estimated effort:** {effort_hours} hours  -  **Confidence:** {confidence:.2f}\n\n"
-        report += f"*Generated: {datetime.utcnow().isoformat()}+00:00 UTC*\n"
+        report += f"*Generated: {datetime.now(timezone.utc).isoformat()} UTC*\n"
 
         print(f"Report: HIGH RISK (severity={severity_int})")
         print(f"  Effort: {effort_hours} hours")
@@ -482,8 +418,18 @@ def report_generation_node(state: AgentState) -> Dict[str, Any]:
         return {"report": report}
 
     except Exception as e:
-        print(f"ERROR: LLM report generation failed: {e}")
-        raise RuntimeError(f"Failed to generate security report using LLM: {e}")
+        print(f"WARNING: LLM report generation failed: {e}")
+        report = "# LlamaGuard Vulnerability Analysis Report\n\n"
+        report += f"## Status: HIGH RISK (CVSS: {final_severity})\n\n"
+        if matched_vulnerabilities:
+            report += "### Detected Vulnerabilities:\n"
+            for vuln in matched_vulnerabilities:
+                report += f"- {vuln}\n"
+            report += "\n"
+        report += f"### Initial Analysis:\n{initial_analysis}\n\n"
+        report += "**Note:** Automated detailed report generation unavailable. Manual security review required.\n"
+        print(f"Report: HIGH RISK fallback (severity={severity_int})")
+        return {"report": report}
 
 
 # ============================================================================
@@ -500,20 +446,6 @@ def detection_branch(state: AgentState) -> Literal["rag_node", "report_generatio
 
     raw = state.get("is_detected", None)
 
-    def _truthy(x: Any) -> bool:
-        if isinstance(x, bool):
-            return x
-        if x is None:
-            return False
-        if isinstance(x, (int, float)):
-            return bool(x)
-        s = str(x).strip().lower()
-        if s in {"true", "1", "yes", "y", "t"}:
-            return True
-        if s in {"false", "0", "no", "n", "f", ""}:
-            return False
-        return False
-
     try:
         detected = _truthy(raw)
         print(f"is_detected: {raw} -> {detected}")
@@ -522,43 +454,10 @@ def detection_branch(state: AgentState) -> Literal["rag_node", "report_generatio
         detected = False
 
     if not detected:
-        # Fallback: check matched_vulnerabilities
-        mv = state.get("matched_vulnerabilities", [])
-        if isinstance(mv, list) and len(mv) > 0:
-            print("Matched vulnerabilities found despite is_detected=False -> routing to [rag_node]")
-            return "rag_node"
-        else:
-            print("No vulnerabilities detected -> routing to [report_generation_node]")
-            return "report_generation_node"
+        print("No vulnerabilities detected -> routing to [report_generation_node]")
+        return "report_generation_node"
 
     print("Vulnerability detected -> routing to [rag_node]")
     return "rag_node"
 
 
-def severity_branch(state: AgentState) -> Literal["vulnerability_fix_node", "report_generation_node"]:
-    """
-    Branch based on CVSS severity score.
-    - If severity >= SEVERITY_THRESHOLD (High): route to vulnerability_fix_node
-    - If severity < SEVERITY_THRESHOLD (Low/Medium): route to report_generation_node
-    """
-    print("\n--- SEVERITY BRANCH ---")
-
-    severity_str = state.get("final_severity")
-
-    if severity_str is None:
-        print("Severity not found -> routing to [report_generation_node]")
-        return "report_generation_node"
-
-    try:
-        severity_score = int(severity_str)
-        print(f"Severity score: {severity_score}")
-
-        if config.SEVERITY_THRESHOLD <= severity_score <= 10:
-            print("High severity detected -> routing to [vulnerability_fix_node]")
-            return "vulnerability_fix_node"
-        else:
-            print("Low/Medium severity detected -> routing to [report_generation_node]")
-            return "report_generation_node"
-    except (ValueError, TypeError):
-        print(f"Invalid severity format: '{severity_str}' -> routing to [report_generation_node]")
-        return "report_generation_node"

@@ -33,6 +33,7 @@ class CVEVectorDB:
         self.embedding_dim = embedding_dim
         self.index = None
         self.cve_entries: List[CVEEntry] = []
+        self._cve_index: Dict[str, CVEEntry] = {}
         self.embedder = None
 
     def _init_embedder(self):
@@ -75,6 +76,7 @@ class CVEVectorDB:
             if cve_entry:
                 self.cve_entries.append(cve_entry)
 
+        self._cve_index = {e.cve_id: e for e in self.cve_entries}
         print(f"Loaded {len(self.cve_entries)} CVE entries")
 
     def _parse_cve_entry(self, text: str) -> Optional[CVEEntry]:
@@ -116,6 +118,24 @@ class CVEVectorDB:
 
         return CVEEntry(cve_id=cve_id, text=text, metadata=metadata)
 
+    @staticmethod
+    def _embedding_text(entry: "CVEEntry") -> str:
+        """
+        Extract the semantic core of a CVE entry for embedding.
+
+        Stops at scraped code sections ('--- Code from ...') to prevent
+        large GitHub diffs (up to 50 KB) from dominating the embedding.
+        all-MiniLM-L6-v2 is capped at 256 tokens, so including multi-KB
+        diffs only dilutes the meaningful description signal.
+        """
+        lines = entry.text.split('\n')
+        core_lines = []
+        for line in lines:
+            if line.startswith('--- Code from'):
+                break
+            core_lines.append(line)
+        return '\n'.join(core_lines)[:2000]
+
     def build_index(self, use_gpu: bool = False):
         """
         Build FAISS index from loaded CVE entries.
@@ -129,7 +149,7 @@ class CVEVectorDB:
         self._init_embedder()
 
         print("Generating embeddings...")
-        texts = [entry.text for entry in self.cve_entries]
+        texts = [self._embedding_text(entry) for entry in self.cve_entries]
 
         # Generate embeddings in batches
         batch_size = 32
@@ -241,6 +261,7 @@ class CVEVectorDB:
         with open(data_path, 'rb') as f:
             self.cve_entries = pickle.load(f)
 
+        self._cve_index = {e.cve_id: e for e in self.cve_entries}
         print(f"Loaded {len(self.cve_entries)} CVE entries")
 
     def get_cve_by_id(self, cve_id: str) -> Optional[CVEEntry]:
@@ -253,10 +274,7 @@ class CVEVectorDB:
         Returns:
             CVEEntry or None if not found
         """
-        for entry in self.cve_entries:
-            if entry.cve_id == cve_id:
-                return entry
-        return None
+        return self._cve_index.get(cve_id)
 
 
 if __name__ == "__main__":

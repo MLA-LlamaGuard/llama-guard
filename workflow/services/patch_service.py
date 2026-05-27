@@ -14,9 +14,10 @@ import json
 from typing import Dict, Any, List
 
 # Add parent directory to path for config import
-service_dir = os.path.dirname(__file__)
-workflow_dir = os.path.join(service_dir, '..')
-sys.path.insert(0, workflow_dir)
+_svc_dir = os.path.dirname(os.path.abspath(__file__))
+_workflow_dir = os.path.dirname(_svc_dir)
+if _workflow_dir not in sys.path:
+    sys.path.insert(0, _workflow_dir)
 
 from config import config
 
@@ -96,50 +97,6 @@ def call_external_for_patch(vuln: str, code: str, language: str) -> Dict[str, An
             except json.JSONDecodeError:
                 pass
         raise RuntimeError(f'Could not parse JSON from API response: {content[:200]}...')
-
-# ---------------------------
-# Main processing logic
-# ---------------------------
-def process_input(original_code: str, vuln: str, score: float, language: str) -> Dict[str, Any]:
-    """
-    Process vulnerability and generate patch if needed.
-
-    Args:
-        original_code: Vulnerable source code
-        vuln: Vulnerability type/name
-        score: Severity score (0-1)
-        language: Programming language
-
-    Returns:
-        Low severity: {"vuln": ..., "decision": "ok", "message": ...}
-        High severity: {"vuln": ..., "patched_code": {"language": ..., "code_snippet": ...}}
-    """
-    if score < config.PATCH_SCORE_THRESHOLD:
-        return {
-            "vuln": vuln,
-            "decision": "ok",
-            "message": f"Low severity (score: {score:.2f}) - monitoring recommended."
-        }
-
-    # High severity -> call external API
-    resp = call_external_for_patch(vuln=vuln, code=original_code, language=language)
-
-    # Validate response
-    if not isinstance(resp, dict) or 'patched_code' not in resp:
-        raise RuntimeError('Invalid API response: missing patched_code')
-
-    patched = resp['patched_code']
-    if not patched.get('code_snippet'):
-        raise RuntimeError('API response contains empty code_snippet')
-
-    return {
-        "vuln": vuln,
-        "patched_code": {
-            "language": patched.get('language', language),
-            "code_snippet": patched['code_snippet']
-        }
-    }
-
 
 # ---------------------------
 # Complete security report generation
@@ -278,7 +235,7 @@ Generate a complete security report in JSON format."""
                 {"role": "user", "content": user_prompt}
             ],
             temperature=config.UPSTAGE_TEMPERATURE,
-            max_tokens=2000,  # Increased for full report
+            max_tokens=config.REPORT_MAX_TOKENS,
             stream=False
         )
     except Exception as ex:

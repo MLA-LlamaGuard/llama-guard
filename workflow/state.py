@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from typing import TypedDict, List, Dict, Any, Annotated
 
 # Load environment variables
-load_dotenv(verbose=True)
+load_dotenv()
 
 
 class AgentState(TypedDict):
@@ -19,7 +19,6 @@ class AgentState(TypedDict):
         retrieved_vulnerabilities: Similar CVEs from vector database (RAG)
         matched_vulnerabilities: Extracted vulnerability type names
         final_severity: CVSS score (0-10) averaged from related CVEs
-        fixed_code: Patched/secure version of the code
         report: Final analysis report for user
         is_detected: Whether vulnerabilities were detected
     """
@@ -28,6 +27,5 @@ class AgentState(TypedDict):
     retrieved_vulnerabilities: Annotated[List[Dict[str, Any]], "Related CVEs from vector DB"]
     matched_vulnerabilities: Annotated[List[str], "Vulnerability type names"]
     final_severity: Annotated[str, "CVSS score (0-10)"]
-    fixed_code: Annotated[str, "Patched code"]
     report: Annotated[str, "Final report"]
-    is_detected: Annotated[bool, "Vulnerability detected flag"] 
+    is_detected: Annotated[bool, "Vulnerability detected flag"]

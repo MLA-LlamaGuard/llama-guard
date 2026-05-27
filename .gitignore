@@ -23,11 +23,23 @@ ENV/
 # Claude Code
 .claude/
 
-# LLaMA Models
+# LLaMA Models (학습용 base 모델 + 결과물)
 llama-model/llama-3.2-1B-Instruct/
 llama-model/llama-3.2-1B-Instruct-vuln-lora/
 llama-model/merged-vuln-detector/
 llama-model/Backup/
+
+# 로컬 다운로드 모델 (llama_download.py 실행 결과)
+models/vuln_detector/
+models/vuln-detector/
+
+# CVE generated files (rebuilt by cve_downloader.py + cve_vectordb.py)
+CVE/cve_database.txt
+CVE/cve_database_with_patches.txt
+CVE/cve_index.faiss
+CVE/cve_data.pkl
+CVE/security_examples.json
+CVE/security_test_dataset.json
 
 # Data
 data/
@@ -41,3 +53,6 @@ logs/
 *.tmp
 nul
 tmp/
+
+docs/
+
