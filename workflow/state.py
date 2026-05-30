@@ -21,6 +21,8 @@ class AgentState(TypedDict):
         final_severity: CVSS score (0-10) averaged from related CVEs
         report: Final analysis report for user
         is_detected: Whether vulnerabilities were detected
+        analysis_error: Runtime error from initial model analysis, if any
+        rag_error: Runtime error from CVE retrieval, if any
     """
     input_code: Annotated[str, "User input code"]
     initial_analysis: Annotated[str, "LLaMA vulnerability analysis"]
@@ -29,3 +31,5 @@ class AgentState(TypedDict):
     final_severity: Annotated[str, "CVSS score (0-10)"]
     report: Annotated[str, "Final report"]
     is_detected: Annotated[bool, "Vulnerability detected flag"]
+    analysis_error: Annotated[str, "Initial analysis runtime error"]
+    rag_error: Annotated[str, "CVE retrieval runtime error"]

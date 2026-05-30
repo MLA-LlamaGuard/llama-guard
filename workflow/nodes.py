@@ -46,6 +46,23 @@ def _truthy(x: Any) -> bool:
     return False
 
 
+def _extract_vulnerability_type(text: str) -> str:
+    """Extract a known vulnerability type from model analysis text."""
+    for pattern, vuln_name in config.VULN_PATTERNS:
+        if re.search(pattern, text or "", re.IGNORECASE):
+            return vuln_name
+    return ""
+
+
+def _static_vulnerability_findings(code: str) -> list[dict[str, str]]:
+    """Return conservative static fallback findings for obvious vulnerability patterns."""
+    findings = []
+    for pattern, vuln_name, reason in config.STATIC_VULN_PATTERNS:
+        if re.search(pattern, code or ""):
+            findings.append({"type": vuln_name, "reason": reason})
+    return findings
+
+
 # ============================================================================
 # Global model instances (lazy loading)
 # ============================================================================
@@ -68,7 +85,12 @@ def _get_llama_model():
     if _llama_tokenizer is None or _llama_model is None:
         try:
             dtype = resolve_dtype(config.MODEL_DTYPE)
-            _llama_tokenizer, _llama_model = load_model(config.MODEL_PATH, dtype, hf_token=config.HF_TOKEN)
+            _llama_tokenizer, _llama_model = load_model(
+                config.MODEL_PATH,
+                dtype,
+                hf_token=config.HF_TOKEN,
+                subfolder=config.MODEL_SUBFOLDER,
+            )
         except Exception as e:
             raise RuntimeError(f"Failed to initialize LLaMA model: {e}")
     return _llama_tokenizer, _llama_model
@@ -117,7 +139,15 @@ def initial_analysis_node(state: AgentState) -> Dict[str, Any]:
         }
 
     # Load LLaMA model
-    tokenizer, llama_model = _get_llama_model()
+    try:
+        tokenizer, llama_model = _get_llama_model()
+    except RuntimeError as e:
+        print(f"ERROR: Model loading failed: {e}")
+        return {
+            "initial_analysis": f"Model loading failed: {e}",
+            "is_detected": False,
+            "analysis_error": str(e),
+        }
 
     # Analyze code
     print(f"Analyzing code ({len(input_code)} chars)...")
@@ -126,16 +156,33 @@ def initial_analysis_node(state: AgentState) -> Dict[str, Any]:
     # Determine if vulnerability detected using configured keywords
     analysis_lower = analysis_result.lower()
     is_vulnerable = any(keyword in analysis_lower for keyword in config.VULN_KEYWORDS)
+    static_findings = _static_vulnerability_findings(input_code)
 
-    # Also check for explicit "no vulnerabilities" or "safe" indicators
-    if any(keyword in analysis_lower for keyword in config.SAFE_KEYWORDS):
+    # SAFE_KEYWORDS only suppress when no vulnerability keyword was found.
+    # Applying them unconditionally would override genuine detections
+    # (e.g. "sql injection detected; no vulnerabilities exploitable remotely").
+    if not is_vulnerable and any(keyword in analysis_lower for keyword in config.SAFE_KEYWORDS):
         is_vulnerable = False
+
+    if static_findings:
+        is_vulnerable = True
+        finding_lines = "\n".join(
+            f"- {finding['type']}: {finding['reason']}" for finding in static_findings
+        )
+        analysis_result = (
+            "Static fallback analysis identified likely vulnerabilities in the provided code.\n\n"
+            "Findings:\n"
+            f"{finding_lines}\n\n"
+            "Detector model output for reference:\n"
+            f"{analysis_result}"
+        )
 
     print(f"Analysis complete. Vulnerabilities detected: {is_vulnerable}")
 
     return {
         "initial_analysis": analysis_result,
         "is_detected": is_vulnerable,
+        "analysis_error": "",
     }
 
 
@@ -165,6 +212,7 @@ def rag_node(state: AgentState) -> Dict[str, Any]:
         return {
             "retrieved_vulnerabilities": [],
             "matched_vulnerabilities": [],
+            "rag_error": "CVE database not available. Build CVE/cve_index.faiss and CVE/cve_data.pkl first.",
         }
 
     # Search for similar CVEs
@@ -193,7 +241,7 @@ def rag_node(state: AgentState) -> Dict[str, Any]:
             "cvss": cve_entry.metadata.get("cvss", ""),
             "cwe": final_cwe,
             "similarity": similarity,
-            "text": cve_entry.text[:config.CVE_TEXT_TRUNCATE_LENGTH] + "..."  # Truncate for state
+            "text": (cve_entry.text[:config.CVE_TEXT_TRUNCATE_LENGTH] + "...") if len(cve_entry.text) > config.CVE_TEXT_TRUNCATE_LENGTH else cve_entry.text
         }
         retrieved_vulns.append(vuln_dict)
 
@@ -221,6 +269,7 @@ def rag_node(state: AgentState) -> Dict[str, Any]:
     return {
         "retrieved_vulnerabilities": retrieved_vulns,
         "matched_vulnerabilities": matched_vuln_list,
+        "rag_error": "",
     }
 
 
@@ -237,7 +286,7 @@ def cvss_calculation_node(state: AgentState) -> Dict[str, Any]:
     retrieved_vulns = state.get("retrieved_vulnerabilities", [])
     if not retrieved_vulns:
         print("WARNING: No retrieved vulnerabilities for CVSS calculation")
-        return {"final_severity": "0"}
+        return {"final_severity": "unknown"}
 
     # Extract CVSS scores
     cvss_scores = []
@@ -288,6 +337,16 @@ def report_generation_node(state: AgentState) -> Dict[str, Any]:
     matched_vulnerabilities = state.get("matched_vulnerabilities", [])
     retrieved_vulnerabilities = state.get("retrieved_vulnerabilities", [])
     input_code = state.get("input_code", "")
+    analysis_error = state.get("analysis_error", "")
+    rag_error = state.get("rag_error", "")
+
+    if analysis_error:
+        report = "# LlamaGuard Vulnerability Analysis Report\n\n"
+        report += "## Status: ERROR\n\n"
+        report += "The vulnerability analysis could not be completed because the detector model failed to initialize.\n\n"
+        report += f"### Error\n{analysis_error}\n"
+        print("Report: ERROR (model initialization failed)")
+        return {"report": report}
 
     if not is_detected:
         # No vulnerability detected
@@ -300,7 +359,25 @@ def report_generation_node(state: AgentState) -> Dict[str, Any]:
         return {"report": report}
 
     # Vulnerability detected
-    severity_int = int(final_severity) if final_severity.isdigit() else 0
+    try:
+        severity_int = int(final_severity)
+    except (ValueError, TypeError):
+        severity_int = None
+
+    if severity_int is None:
+        report = "# LlamaGuard Vulnerability Analysis Report\n\n"
+        report += "## Status: REVIEW REQUIRED (CVSS: unknown)\n\n"
+        if matched_vulnerabilities:
+            report += "### Detected Vulnerabilities:\n"
+            for vuln in matched_vulnerabilities:
+                report += f"- {vuln}\n"
+            report += "\n"
+        report += f"### Initial Analysis:\n{initial_analysis}\n\n"
+        if rag_error:
+            report += f"### CVE Retrieval Status\n{rag_error}\n\n"
+        report += "**Recommendation:** Vulnerability was detected, but severity could not be calculated. Build or repair the CVE vector database and run analysis again, or perform manual security review.\n"
+        print("Report: REVIEW REQUIRED (severity unknown)")
+        return {"report": report}
 
     if severity_int < config.SEVERITY_THRESHOLD:
         # Low/Medium severity: basic report
@@ -321,7 +398,11 @@ def report_generation_node(state: AgentState) -> Dict[str, Any]:
     from datetime import datetime, timezone
 
     # Extract primary vulnerability type
-    primary_vuln = matched_vulnerabilities[0] if matched_vulnerabilities else "UNKNOWN_VULNERABILITY"
+    primary_vuln = (
+        _extract_vulnerability_type(initial_analysis)
+        or (matched_vulnerabilities[0] if matched_vulnerabilities else "")
+        or "UNKNOWN_VULNERABILITY"
+    )
 
     # Detect language
     language = "python"  # Default
@@ -342,7 +423,8 @@ def report_generation_node(state: AgentState) -> Dict[str, Any]:
             code=input_code,
             language=language,
             cvss_score=float(final_severity),
-            llama_analysis=initial_analysis
+            llama_analysis=initial_analysis,
+            related_cves=retrieved_vulnerabilities[:config.REPORT_MAX_RELATED_CVES],
         )
 
         # Build formatted report from LLM response
@@ -405,7 +487,7 @@ def report_generation_node(state: AgentState) -> Dict[str, Any]:
 
         # Metadata footer
         effort_hours = llm_report.get('estimated_effort_hours', 10)
-        confidence = llm_report.get('confidence', 0.80)
+        confidence = float(llm_report.get('confidence', 0.80))
 
         report += f"**Estimated effort:** {effort_hours} hours  -  **Confidence:** {confidence:.2f}\n\n"
         report += f"*Generated: {datetime.now(timezone.utc).isoformat()} UTC*\n"
@@ -459,5 +541,3 @@ def detection_branch(state: AgentState) -> Literal["rag_node", "report_generatio
 
     print("Vulnerability detected -> routing to [rag_node]")
     return "rag_node"
-
-

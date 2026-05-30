@@ -11,7 +11,7 @@ Uses configuration from config.py for all thresholds and API settings.
 import os
 import sys
 import json
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 # Add parent directory to path for config import
 _svc_dir = os.path.dirname(os.path.abspath(__file__))
@@ -106,7 +106,8 @@ def generate_security_report(
     code: str,
     language: str,
     cvss_score: float,
-    llama_analysis: str
+    llama_analysis: str,
+    related_cves: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """
     Call Upstage Solar API to generate complete security report with patch.
@@ -117,6 +118,7 @@ def generate_security_report(
         language: Programming language
         cvss_score: CVSS severity score (0-10)
         llama_analysis: LLaMA model's vulnerability analysis
+        related_cves: Retrieved CVE evidence from RAG search
 
     Returns:
         {
@@ -160,6 +162,19 @@ def generate_security_report(
         raise RuntimeError('OpenAI SDK not installed. Install with: pip install openai>=1.52.2')
 
     client = OpenAI(api_key=config.UPSTAGE_API_KEY, base_url=config.UPSTAGE_BASE_URL)
+    cve_context = "No related CVEs were provided."
+    if related_cves:
+        cve_lines = []
+        for cve in related_cves:
+            cve_lines.append(
+                "- "
+                f"{cve.get('cve_id', 'N/A')} | "
+                f"CVSS: {cve.get('cvss', 'N/A')} | "
+                f"CWE: {cve.get('cwe', 'N/A')} | "
+                f"Similarity: {cve.get('similarity', 0):.4f}\n"
+                f"  Evidence: {str(cve.get('text', ''))[:500]}"
+            )
+        cve_context = "\n".join(cve_lines)
 
     system_prompt = """You are a senior security engineer and vulnerability analyst. Your task is to generate a comprehensive security report for a code vulnerability.
 
@@ -224,6 +239,9 @@ Vulnerable code:
 
 Initial analysis:
 {llama_analysis}
+
+Related CVE evidence from RAG:
+{cve_context}
 
 Generate a complete security report in JSON format."""
 

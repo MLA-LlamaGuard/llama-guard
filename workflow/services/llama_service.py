@@ -26,7 +26,7 @@ from llama_predict import resolve_dtype, build_prompt
 from CVE.cve_vectordb import CVEVectorDB
 
 
-def load_model(model_path: str, dtype, hf_token: str = None):
+def load_model(model_path: str, dtype, hf_token: str = None, subfolder: str = None):
     """
     Load fine-tuned LLaMA model for vulnerability analysis.
 
@@ -34,6 +34,7 @@ def load_model(model_path: str, dtype, hf_token: str = None):
         model_path: HuggingFace Hub ID (e.g. 'cycloevan/vuln_detector') or local directory
         dtype: Data type for model (torch dtype object)
         hf_token: HuggingFace token for private models (optional)
+        subfolder: Optional HuggingFace repository subfolder containing model files
 
     Returns:
         Tuple of (tokenizer, model)
@@ -44,12 +45,16 @@ def load_model(model_path: str, dtype, hf_token: str = None):
     print(f"\n[1/3] Loading LLaMA model from {model_path}...")
 
     try:
-        tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True, token=hf_token)
+        load_kwargs = {"token": hf_token}
+        if subfolder and not os.path.isdir(model_path):
+            load_kwargs["subfolder"] = subfolder
+
+        tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True, **load_kwargs)
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
 
         model = AutoModelForCausalLM.from_pretrained(
-            model_path, torch_dtype=dtype, device_map="auto", token=hf_token
+            model_path, torch_dtype=dtype, device_map="auto", **load_kwargs
         )
         model.eval()
         print(f"Model loaded (GPU: {torch.cuda.is_available()})")

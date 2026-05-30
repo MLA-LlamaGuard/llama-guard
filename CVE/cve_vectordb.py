@@ -7,6 +7,7 @@ Creates and manages a FAISS-based vector database for CVE data with RAG capabili
 import numpy as np
 import faiss
 import pickle
+import sys
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
@@ -95,8 +96,14 @@ class CVEVectorDB:
 
         metadata = {}
         cve_id = "UNKNOWN"
+        cwe_values = []
 
         for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("- CWE-"):
+                cwe_values.append(stripped[2:].strip())
+                continue
+
             if ':' in line:
                 key, value = line.split(':', 1)
                 key = key.strip()
@@ -115,6 +122,9 @@ class CVEVectorDB:
                     metadata['cwe'] = value
                 elif key == "Description":
                     metadata['description'] = value
+
+        if cwe_values and not metadata.get('cwe'):
+            metadata['cwe'] = ", ".join(cwe_values)
 
         return CVEEntry(cve_id=cve_id, text=text, metadata=metadata)
 
@@ -216,7 +226,7 @@ class CVEVectorDB:
         # Return results
         results = []
         for idx, score in zip(indices[0], scores[0]):
-            if idx < len(self.cve_entries):
+            if idx >= 0 and idx < len(self.cve_entries):
                 results.append((self.cve_entries[idx], float(score)))
 
         return results
@@ -258,6 +268,7 @@ class CVEVectorDB:
             self.index = faiss.index_cpu_to_gpu(res, 0, self.index)
 
         print(f"Loading data from {data_path}...")
+        sys.modules['__main__'].CVEEntry = CVEEntry
         with open(data_path, 'rb') as f:
             self.cve_entries = pickle.load(f)
 

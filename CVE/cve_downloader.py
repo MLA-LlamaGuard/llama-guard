@@ -154,79 +154,86 @@ class CVEDownloader:
         """
         all_cves = []
 
-        # NVD API v2.0 has a 120-day maximum range limit
-        # Split into 120-day chunks if needed
+        # NVD API v2.0 has a 120-day maximum range limit.
         max_days_per_request = 120
         end_date = datetime.now()
-        total_days = min(days_back, 120)  # Cap at 120 days
+        total_days = max(1, days_back)
         start_date = end_date - timedelta(days=total_days)
 
         print(f"Starting CVE download from NVD...")
         print(f"Filtering for CVEs with CVSS scores and CWE categories")
         print(f"Date range: {start_date.date()} to {end_date.date()}")
 
-        current_index = start_index
-
-        while True:
+        chunk_end = end_date
+        while chunk_end > start_date:
             if max_results and len(all_cves) >= max_results:
                 break
 
-            params = {
-                "startIndex": current_index,
-                "resultsPerPage": results_per_page,
-                "pubStartDate": start_date.strftime("%Y-%m-%dT00:00:00.000Z"),
-                "pubEndDate": end_date.strftime("%Y-%m-%dT23:59:59.999Z")
-            }
+            chunk_start = max(start_date, chunk_end - timedelta(days=max_days_per_request))
+            current_index = start_index
 
-            try:
-                response = requests.get(
-                    self.BASE_URL,
-                    headers=self.headers,
-                    params=params,
-                    timeout=30
-                )
-                response.raise_for_status()
-
-                data = response.json()
-                vulnerabilities = data.get("vulnerabilities", [])
-
-                if not vulnerabilities:
-                    break
-
-                # Filter for CVEs with both CVSS and CWE
-                filtered = [v for v in vulnerabilities if self.has_cvss_and_cwe(v)]
-
-                # Respect max_results limit
-                if max_results:
-                    remaining = max_results - len(all_cves)
-                    filtered = filtered[:remaining]
-
-                all_cves.extend(filtered)
-
-                print(f"Downloaded {len(vulnerabilities)} CVEs, {len(filtered)} match filters (Total: {len(all_cves)})...")
-
-                # Stop if we've reached the limit
+            while True:
                 if max_results and len(all_cves) >= max_results:
-                    print(f"Reached max_results limit of {max_results}")
                     break
 
-                # Check if there are more results
-                total_results = data.get("totalResults", 0)
-                if current_index + results_per_page >= total_results:
+                params = {
+                    "startIndex": current_index,
+                    "resultsPerPage": results_per_page,
+                    "pubStartDate": chunk_start.strftime("%Y-%m-%dT00:00:00.000Z"),
+                    "pubEndDate": chunk_end.strftime("%Y-%m-%dT23:59:59.999Z")
+                }
+
+                try:
+                    response = requests.get(
+                        self.BASE_URL,
+                        headers=self.headers,
+                        params=params,
+                        timeout=30
+                    )
+                    response.raise_for_status()
+
+                    data = response.json()
+                    vulnerabilities = data.get("vulnerabilities", [])
+
+                    if not vulnerabilities:
+                        break
+
+                    # Filter for CVEs with both CVSS and CWE
+                    filtered = [v for v in vulnerabilities if self.has_cvss_and_cwe(v)]
+
+                    # Respect max_results limit
+                    if max_results:
+                        remaining = max_results - len(all_cves)
+                        filtered = filtered[:remaining]
+
+                    all_cves.extend(filtered)
+
+                    print(f"Downloaded {len(vulnerabilities)} CVEs, {len(filtered)} match filters (Total: {len(all_cves)})...")
+
+                    # Stop if we've reached the limit
+                    if max_results and len(all_cves) >= max_results:
+                        print(f"Reached max_results limit of {max_results}")
+                        break
+
+                    # Check if there are more results
+                    total_results = data.get("totalResults", 0)
+                    if current_index + results_per_page >= total_results:
+                        break
+
+                    current_index += results_per_page
+
+                    # Rate limiting: wait between requests
+                    # With API key: 50 requests per 30 seconds
+                    # Without API key: 5 requests per 30 seconds
+                    sleep_time = 0.6 if self.api_key else 6
+                    time.sleep(sleep_time)
+
+                except requests.exceptions.RequestException as e:
+                    print(f"Error downloading CVEs: {e}")
+                    print(f"Response: {response.text if 'response' in locals() else 'No response'}")
                     break
 
-                current_index += results_per_page
-
-                # Rate limiting: wait between requests
-                # With API key: 50 requests per 30 seconds
-                # Without API key: 5 requests per 30 seconds
-                sleep_time = 0.6 if self.api_key else 6
-                time.sleep(sleep_time)
-
-            except requests.exceptions.RequestException as e:
-                print(f"Error downloading CVEs: {e}")
-                print(f"Response: {response.text if 'response' in locals() else 'No response'}")
-                break
+            chunk_end = chunk_start - timedelta(milliseconds=1)
 
         # Sort by publication date (most recent first)
         all_cves.sort(key=lambda x: x.get("cve", {}).get("published", ""), reverse=True)

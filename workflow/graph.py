@@ -8,6 +8,7 @@ LangGraph workflow construction and execution for LlamaGuard vulnerability analy
 import os
 import sys
 import argparse
+import sqlite3
 import path_setup  # noqa: F401 — adds project root and llama-model/ to sys.path
 from langgraph.graph import StateGraph, END
 try:
@@ -85,7 +86,8 @@ def build_graph():
     workflow.add_edge("report_generation_node", END)
 
     if _USE_SQLITE:
-        memory = SqliteSaver.from_conn_string(_DB_PATH)
+        conn = sqlite3.connect(_DB_PATH, check_same_thread=False)
+        memory = SqliteSaver(conn)
     else:
         memory = InMemorySaver()
     graph = workflow.compile(checkpointer=memory)

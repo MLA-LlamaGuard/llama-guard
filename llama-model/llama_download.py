@@ -3,7 +3,7 @@ import torch
 import os
 
 
-def download_and_save(model_id: str, save_dir: str, hf_token: str = None):
+def download_and_save(model_id: str, save_dir: str, hf_token: str = None, subfolder: str = None):
     has_cuda = torch.cuda.is_available()
     dtype = torch.float16 if has_cuda else torch.float32
     device_map = "auto" if has_cuda else None
@@ -12,7 +12,11 @@ def download_and_save(model_id: str, save_dir: str, hf_token: str = None):
     print(f" - GPU 사용: {has_cuda}")
     print(f" - 저장 경로: {save_dir}")
 
-    tokenizer = AutoTokenizer.from_pretrained(model_id, use_fast=True, token=hf_token)
+    load_kwargs = {"token": hf_token}
+    if subfolder:
+        load_kwargs["subfolder"] = subfolder
+
+    tokenizer = AutoTokenizer.from_pretrained(model_id, use_fast=True, **load_kwargs)
 
     if tokenizer.pad_token is None and tokenizer.eos_token is not None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -22,7 +26,7 @@ def download_and_save(model_id: str, save_dir: str, hf_token: str = None):
         torch_dtype=dtype,
         device_map=device_map,
         low_cpu_mem_usage=True,
-        token=hf_token,
+        **load_kwargs,
     )
 
     os.makedirs(save_dir, exist_ok=True)
@@ -41,5 +45,5 @@ if __name__ == "__main__":
         model_id="cycloevan/vuln_detector",
         save_dir=_save_dir,
         hf_token=token,
+        subfolder=os.environ.get("MODEL_SUBFOLDER", "merged-vuln-detector"),
     )
-

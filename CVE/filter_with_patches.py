@@ -36,7 +36,11 @@ def filter_cves_with_patches(input_file: str, output_file: str) -> int:
 
     with open(output_file, 'w', encoding='utf-8') as f:
         f.write("CVE Database Export (Filtered - With Patches Only)\n")
-        f.write(f"Generated: {header.split('Generated: ')[1].split()[0] if 'Generated:' in header else 'N/A'}\n")
+        try:
+            date_str = header.split('Generated: ')[1].split()[0] if 'Generated:' in header else 'N/A'
+        except IndexError:
+            date_str = 'N/A'
+        f.write(f"Generated: {date_str}\n")
         f.write(f"Total CVEs with patches: {cves_with_patches}\n")
         f.write("=" * 80 + "\n")
         for entry in filtered_entries:

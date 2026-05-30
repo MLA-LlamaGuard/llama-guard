@@ -5,6 +5,10 @@ All hardcoded values and magic numbers should be defined here.
 """
 
 import os
+from dotenv import load_dotenv
+
+
+load_dotenv()
 
 
 class Config:
@@ -20,6 +24,7 @@ class Config:
 
     # Model identifier — HuggingFace Hub ID or local directory path
     MODEL_PATH = os.environ.get('MODEL_PATH', 'cycloevan/vuln_detector')
+    MODEL_SUBFOLDER = os.environ.get('MODEL_SUBFOLDER', 'merged-vuln-detector')
 
     # CVE database paths
     CVE_DIR = os.path.join(PROJECT_DIR, "CVE")
@@ -82,6 +87,36 @@ class Config:
         (r'Buffer\s+Overflow', 'Buffer Overflow'),
         (r'Code\s+Injection', 'Code Injection'),
         (r'Deserialization', 'Insecure Deserialization'),
+    ]
+
+    # Conservative static fallback patterns for obvious vulnerable code shapes.
+    # These only supplement the LLaMA detector when the model misses clear cases.
+    STATIC_VULN_PATTERNS = [
+        (
+            r'(?is)(SELECT|INSERT|UPDATE|DELETE).*\{.*\}.*\n.*execute\s*\(',
+            'SQL Injection',
+            'Dynamic SQL query construction is passed to execute().'
+        ),
+        (
+            r'(?is)(SELECT|INSERT|UPDATE|DELETE).*(%|\.format\s*\(|\+).*\n.*execute\s*\(',
+            'SQL Injection',
+            'String-formatted SQL query construction is passed to execute().'
+        ),
+        (
+            r'(?is)\bos\.system\s*\(\s*input\s*\(',
+            'Command Injection',
+            'User-controlled input is passed directly to os.system().'
+        ),
+        (
+            r'(?is)\bsubprocess\.(run|call|Popen)\s*\([^)]*shell\s*=\s*True',
+            'Command Injection',
+            'subprocess is invoked with shell=True.'
+        ),
+        (
+            r'(?is)\beval\s*\(\s*input\s*\(',
+            'Code Injection',
+            'User-controlled input is passed directly to eval().'
+        ),
     ]
 
     # ============================================================================
